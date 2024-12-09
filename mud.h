@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
+// 最多32个路径
 #define MUD_PATH_MAX    (32U)
 #define MUD_PUBKEY_SIZE (32U)
 
@@ -48,10 +49,11 @@ struct mud_stat {
     int setup;
 };
 
+// mud配置
 struct mud_conf {
-    uint64_t keepalive;
-    uint64_t timetolerance;
-    uint64_t kxtimeout;
+    uint64_t keepalive;         // 保活时间
+    uint64_t timetolerance;     // 时间容忍
+    uint64_t kxtimeout;          // 密钥交换超时
 };
 
 // IPv4 or IPv6
@@ -72,9 +74,9 @@ struct mud_path_conf {
     uint64_t tx_max_rate;
     // 接受最大速率
     uint64_t rx_max_rate;
-    // 心跳时间
+    // 心跳时间间隔，ms
     uint64_t beat;
-    // 预先设置的速率
+    // 路径优先级
     unsigned char pref;
     // 固定速率
     unsigned char fixed_rate;
@@ -89,33 +91,39 @@ struct mud_path {
     enum mud_path_status status;
     union mud_sockaddr remote;
     struct mud_stat rtt;
+
+    // 发送和接收统计
     struct {
         uint64_t total;
         uint64_t bytes;
-        uint64_t time;
+        uint64_t time;      // 
         uint64_t rate;
         uint64_t loss;
     } tx, rx;
+
+    // 消息统计
     struct {
         struct {
-            uint64_t total;
-            uint64_t bytes;
-            uint64_t time;
-            uint64_t acc;
-            uint64_t acc_time;
+            uint64_t total;         // 消息总数
+            uint64_t bytes;         // 消息总字节数
+            uint64_t time;          // 最后一次传输时间
+            uint64_t acc;           // 累计消息数，用于带宽计算
+            uint64_t acc_time;      // 累计消息时间，用于带宽计算
         } tx, rx;
-        uint64_t time;
-        uint64_t sent;
-        uint64_t set;
+        uint64_t time;              // 当前消息时间戳
+        uint64_t sent;              // 已发送消息数
+        uint64_t set;               // 每多少个消息进行一次统计
     } msg;
+
+    // MTU相关内容
     struct {
-        size_t min;
-        size_t max;
-        size_t probe;
-        size_t last;
-        size_t ok;
+        size_t min;                 // 最小MTU
+        size_t max;                 // 最大MTU
+        size_t probe;               // MTU探测值
+        size_t last;                // 最后一次MTU
+        size_t ok;                  // MTU探测是否成功
     } mtu;
-    uint64_t idle;
+    uint64_t idle;  // 路径空闲时间统计
 };
 
 struct mud_error {
@@ -141,14 +149,15 @@ void        mud_delete (struct mud *);
 int mud_set      (struct mud *, struct mud_conf *);
 int mud_set_path (struct mud *, struct mud_path_conf *);
 
-int mud_update    (struct mud *);
-int mud_send_wait (struct mud *);
-
-int mud_recv (struct mud *, void *, size_t);
-int mud_send (struct mud *, const void *, size_t);
-
-int    mud_get_errors (struct mud *, struct mud_errors *);
-int    mud_get_fd     (struct mud *);
-size_t mud_get_mtu    (struct mud *);
+    int fd;
+    struct mud_conf conf;
+    struct mud_path *paths; // 路径数组
+    unsigned pref;          // 预先设置的速率
+    unsigned capacity;      // 路径数量
+    struct mud_keyx keyx;   // 密钥交换
+    uint64_t last_recv_time; // 最后一次接收时间
+    size_t mtu;            // 最大传输单元
+    struct mud_errors err;  // 错误信息
+    uint64_t rate;         // 速率
 int    mud_get_paths  (struct mud *, struct mud_paths *,
                        union mud_sockaddr *, union mud_sockaddr *);

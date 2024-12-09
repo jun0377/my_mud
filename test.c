@@ -42,11 +42,13 @@ main(int argc, char **argv)
                 .sin_port = htons(20000),
                 .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
             },
-            .state = MUD_UP,     // 对于UDP来说，只要本地地址bind成功，就认为连接已建立
+            .state = MUD_UP,                // 对于UDP来说，只要本地地址bind成功，就认为连接已建立
             .tx_max_rate = 1000 * 1000,     // 最大发送速率
             .rx_max_rate = 1000 * 1000,     // 最大接收速率
             // use default beat, fixed_rate, loss_limit
         };
+
+        // 添加一个新路径，并进行配置
         if (mud_set_path(mud, &path_conf)) {
             perror("mud_set_path");
             return -1;
@@ -57,15 +59,20 @@ main(int argc, char **argv)
 
     for (;;) {
         // mandatory, mud have lot of work to do.
+        // mud_update返回true,说明流控窗口小于1500,休眠等待
         if (mud_update(mud))
             usleep(100000); // don't use all the cpu
 
         if (client) {
             // when there is data, mud_recv() is mandatory
+
+            // poll
             struct pollfd pollfd = {
                 .fd = mud_get_fd(mud),
                 .events = POLLIN,
             };
+
+            // 等待UDP套接字可读
             switch (poll(&pollfd, 1, 0)) {
             case -1:
                 perror("poll");

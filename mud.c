@@ -141,18 +141,18 @@ struct mud_keyx {
 };
 
 struct mud {
-    int fd;
-    struct mud_conf conf;
-    struct mud_path *paths;
-    unsigned pref;
-    unsigned capacity;
+    int fd;                 // UDP套接字
+    struct mud_conf conf;   // mud配置
+    struct mud_path *paths; // 路径数组
+    unsigned pref;          // 全局路径优先级
+    unsigned capacity;      // 路径数量
     struct mud_keyx keyx;
-    uint64_t last_recv_time;
+    uint64_t last_recv_time;    // 最后一次收到数据的时间戳
     size_t mtu;
     struct mud_errors err;
     uint64_t rate;
-    uint64_t window;
-    uint64_t window_time;
+    uint64_t window;            // 流控窗口大小
+    uint64_t window_time;       // 流控窗口更新的时间戳
     uint64_t base_time;
 #if defined __APPLE__
     mach_timebase_info_data_t mtid;
@@ -301,6 +301,7 @@ mud_abs_diff(uint64_t a, uint64_t b)
     return (a >= b) ? a - b : b - a;
 }
 
+// 判断是否超时，单位us
 static inline int
 mud_timeout(uint64_t now, uint64_t last, uint64_t timeout)
 {
@@ -473,47 +474,67 @@ mud_get_paths(struct mud *mud, struct mud_paths *paths,
     return 0;
 }
 
-// 获取所有路径
+// 获取指定路径
 static struct mud_path *
 mud_get_path(struct mud *mud,
              union mud_sockaddr *local,
              union mud_sockaddr *remote,
              enum mud_state state)
 {
+    // 本地地址和远端地址的协议族不一致
     if (local->sa.sa_family != remote->sa.sa_family) {
         errno = EINVAL;
         return NULL;
     }
+
+    // 遍历所有路径
     for (unsigned i = 0; i < mud->capacity; i++) {
+
+        // 获取路径
         struct mud_path *path = &mud->paths[i];
 
+        // 路径状态为空，说明没有初始化
         if (path->conf.state == MUD_EMPTY)
             continue;
 
+        // 不是指定的路径，continue
         if (mud_cmp_addr(local, &path->conf.local)   ||
             mud_cmp_addr(remote, &path->conf.remote) ||
             mud_cmp_port(remote, &path->conf.remote))
             continue;
 
+        // 成功找到指定的路径
         return path;
     }
+
+    // 路径状态小于等于MUD_DOWN，说明路径没有初始化或已关闭
     if (state <= MUD_DOWN) {
         errno = 0;
         return NULL;
     }
+
+    // 到这一步说明没有找到指定的路径，创建之
+
     struct mud_path *path = NULL;
 
+    // 从数组中找到一个空路径
     for (unsigned i = 0; i < mud->capacity; i++) {
         if (mud->paths[i].conf.state == MUD_EMPTY) {
             path = &mud->paths[i];
             break;
         }
     }
+
+    // 没有找到空路径，数组需要扩容
     if (!path) {
+
+        // 最多32个路径
         if (mud->capacity == MUD_PATH_MAX) {
             errno = ENOMEM;
             return NULL;
         }
+
+        // 数组扩容
         struct mud_path *paths = realloc(mud->paths,
                 (mud->capacity + 1) * sizeof(struct mud_path));
 
@@ -527,10 +548,11 @@ mud_get_path(struct mud *mud,
     }
     memset(path, 0, sizeof(struct mud_path));
 
+    // 新路径默认配置
     path->conf.local      = *local;
     path->conf.remote     = *remote;
     path->conf.state      = state;
-    path->conf.beat       = 100 * MUD_ONE_MSEC;
+    path->conf.beat       = 100 * MUD_ONE_MSEC; // 心跳时间间隔，100 ms
     path->conf.fixed_rate = 1;
     path->conf.loss_limit = 255;
     path->status          = MUD_PROBING;
@@ -737,6 +759,7 @@ mud_create(union mud_sockaddr *addr, unsigned char *key, int *aes)
     return mud;
 }
 
+// 获取UDP套接字
 int
 mud_get_fd(struct mud *mud)
 {
@@ -983,10 +1006,14 @@ mud_update_rl(struct mud *mud, struct mud_path *path, uint64_t now,
         path->tx.rate = path->conf.tx_max_rate;
 }
 
+// MTU探测更新
 static void
 mud_update_mtu(struct mud_path *path, size_t size)
 {
+    // 没有进行MTU探测
     if (!path->mtu.probe) {
+
+        // 没有已记录的MTU，设置为默认值
         if (!path->mtu.last) {
             path->mtu.min = MUD_MTU_MIN;
             path->mtu.max = MUD_MTU_MAX;
@@ -994,9 +1021,14 @@ mud_update_mtu(struct mud_path *path, size_t size)
         }
         return;
     }
+
+
     if (size) {
+
+        // 
         if (path->mtu.min > size || path->mtu.max < size)
             return;
+
         path->mtu.min = size + 1;
         path->mtu.last = size;
     } else {
@@ -1180,50 +1212,71 @@ mud_recv(struct mud *mud, void *data, size_t size)
     return MUD_MSG(sent_time) ? 0 : (int)ret;
 }
 
+// 更新路径状态
 static int
 mud_path_update(struct mud *mud, struct mud_path *path, uint64_t now)
 {
     switch (path->conf.state) {
-    case MUD_DOWN:
-        path->status = MUD_DELETING;
-        if (mud_timeout(now, path->rx.time, 2 * MUD_ONE_MIN))
-            memset(path, 0, sizeof(struct mud_path));
-        return 0;
-    case MUD_PASSIVE:
-        if (mud_timeout(now, mud->last_recv_time, 2 * MUD_ONE_MIN)) {
-            memset(path, 0, sizeof(struct mud_path));
+    
+        // 连接已关闭 -> 路径正在被删除; 如果超过2分钟没有收到数据，则删除路径
+        case MUD_DOWN:
+            path->status = MUD_DELETING;
+            if (mud_timeout(now, path->rx.time, 2 * MUD_ONE_MIN))
+                memset(path, 0, sizeof(struct mud_path));
             return 0;
-        }
-    case MUD_UP: break;
-    default:     return 0;
+        // 被动连接 -> 如果超过2分钟没有新的连接，则删除路径
+        case MUD_PASSIVE:
+            if (mud_timeout(now, mud->last_recv_time, 2 * MUD_ONE_MIN)) {
+                memset(path, 0, sizeof(struct mud_path));
+                return 0;
+            }
+        case MUD_UP: break;
+        default:     return 0;
     }
+
+    // 每5个消息，更新一次MTU
     if (path->msg.sent >= MUD_MSG_SENT_MAX) {
+
+        // MTU探测
         if (path->mtu.probe) {
             mud_update_mtu(path, 0);
             path->msg.sent = 0;
-        } else {
+        } 
+        // 没有开启MTU探测，认为路径质量下降
+        else 
+        {
             path->msg.sent = MUD_MSG_SENT_MAX;
             path->status = MUD_DEGRADED;
             return 0;
         }
     }
+
+    // MTU探测失败
     if (!path->mtu.ok) {
         path->status = MUD_PROBING;
         return 0;
     }
+
+    // 丢包率超过阈值
     if (path->tx.loss > path->conf.loss_limit ||
         path->rx.loss > path->conf.loss_limit) {
         path->status = MUD_LOSSY;
         return 0;
     }
+
+    // 被动连接状态
     if (path->conf.state == MUD_PASSIVE &&
         mud_timeout(mud->last_recv_time, path->rx.time,
                     MUD_MSG_SENT_MAX * path->conf.beat)) {
         path->status = MUD_WAITING;
         return 0;
     }
+
+    // 当前路径优先级 高于 全局优先级，则认为路径已准备好
     if (path->conf.pref > mud->pref) {
         path->status = MUD_READY;
+
+    // 更新路径状态为RUNNING
     } else if (path->status != MUD_RUNNING) {
         path->status = MUD_RUNNING;
         path->idle = now;
@@ -1231,15 +1284,21 @@ mud_path_update(struct mud *mud, struct mud_path *path, uint64_t now)
     return 1;
 }
 
+// 路径跟踪
 static uint64_t
 mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
 {
+    // 只关注MUD_UP状态的路径
     if (path->conf.state != MUD_UP)
         return now;
 
+    // 路径心跳包间隔ms
     uint64_t timeout = path->conf.beat;
 
+
     switch (path->status) {
+
+        // 路径状态为RUNNING，且路径空闲超过1s, 则更新timeout为keepalive
         case MUD_RUNNING:
             if (mud_timeout(now, path->idle, MUD_ONE_SEC))
                 timeout = mud->conf.keepalive;
@@ -1251,6 +1310,8 @@ mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
         default:
             return now;
     }
+
+    // 当前时间和路径上次发送时间差大于保活时间，则发送心跳包
     if (mud_timeout(now, path->msg.time, timeout)) {
         path->msg.sent++;
         path->msg.time = now;
@@ -1263,18 +1324,26 @@ mud_path_track(struct mud *mud, struct mud_path *path, uint64_t now)
 static void
 mud_update_window(struct mud *mud, const uint64_t now)
 {
+    // 当前时间 - 上次更新时间
     uint64_t elapsed = MUD_TIME_MASK(now - mud->window_time);
 
+    // 超过1ms, 更新流控窗口
     if (elapsed > MUD_ONE_MSEC) {
+        // 根据速率和时间窗口，计算流控窗口增量
         mud->window += mud->rate * elapsed / MUD_ONE_SEC;
+        // 更新时间戳
         mud->window_time = now;
     }
+
+    // 流控窗口最大值
     uint64_t window_max = mud->rate * 100 * MUD_ONE_MSEC / MUD_ONE_SEC;
 
+    // 流控窗口最大值限制
     if (mud->window > window_max)
         mud->window = window_max;
 }
 
+// 路径状态更新
 int
 mud_update(struct mud *mud)
 {
@@ -1285,50 +1354,77 @@ mud_update(struct mud *mud)
     size_t   mtu = 0;
     uint64_t now = mud_now(mud);
 
+    // 密钥交换初始化
     if (!mud_keyx_init(mud, now))
         now = mud_now(mud);
 
+    // 遍历所有路径，更新路径状态，发送心跳包
     for (unsigned i = 0; i < mud->capacity; i++) {
+
+        // 当前路径
         struct mud_path *path = &mud->paths[i];
 
+        // 更新当前路径状态
         if (mud_path_update(mud, path, now)) {
+
+            // 当前路径优先级在mud->pref和next_pref之间，更新next_pref
             if (next_pref > path->conf.pref && path->conf.pref > mud->pref)
                 next_pref = path->conf.pref;
+
+            // 当前路径优先级小于perf,更新pref
             if (pref > path->conf.pref)
                 pref = path->conf.pref;
+
+            // 当前路径状态为RUNNING,更新rate
             if (path->status == MUD_RUNNING)
                 rate += path->tx.rate;
         }
+
+        // MTU探测成功，则更新mte
         if (path->mtu.ok) {
             if (!mtu || mtu > path->mtu.ok)
                 mtu = path->mtu.ok;
         }
+
+        // 路径追踪，发送心跳包
         now = mud_path_track(mud, path, now);
         count++;
     }
+
+    // 任一路径有码率，则更新全局优先级
     if (rate) {
         mud->pref = pref;
+
+    // 所有路径均没有码率
     } else {
         mud->pref = next_pref;
 
         for (unsigned i = 0; i < mud->capacity; i++) {
             struct mud_path *path = &mud->paths[i];
 
+            // 更新路径状态
             if (!mud_path_update(mud, path, now))
                 continue;
 
+            // 当前路径状态为RUNNING,更新rate
             if (path->status == MUD_RUNNING)
                 rate += path->tx.rate;
         }
     }
+
+    // 更新全局码率
     mud->rate = rate;
+    // 更新MTU
     mud->mtu = mtu;
 
+    // 更新流控窗口
     mud_update_window(mud, now);
 
+    // 没有可用的路径
     if (!count)
         return -1;
 
+    // 流控窗口是否小于1500; 流控窗口小于标准MTU1500,需要等待
     return mud->window < 1500;
 }
 
@@ -1342,7 +1438,7 @@ mud_set_path(struct mud *mud, struct mud_path_conf *conf)
         return -1;
     }
 
-    // 
+    // 从数组中获取指定路径，如果路径不存在，则创建之
     struct mud_path *path = mud_get_path(mud, &conf->local,
                                               &conf->remote,
                                               conf->state);
@@ -1351,6 +1447,7 @@ mud_set_path(struct mud *mud, struct mud_path_conf *conf)
 
     struct mud_path_conf c = path->conf;
 
+    // 配置路径，覆盖mud_get_path中的路径默认配置
     if (conf->state)       c.state       = conf->state;
     if (conf->pref)        c.pref        = conf->pref >> 1;
     if (conf->beat)        c.beat        = conf->beat * MUD_ONE_MSEC;

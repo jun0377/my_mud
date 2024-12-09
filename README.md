@@ -3,6 +3,21 @@
 MUD is a secure, multipath network protocol over UDP.
 See [glorytun](https://github.com/angt/glorytun) for details.
 
+### 项目配置
+- 此项目含有子模块，需要加上`--recursive`参数
+```bash
+$ git clone git@github.com:jun0377/my_mud.git --recursive
+```
+- 需要安装`libsodium-dev`,ubuntu上安装命令如下
+```bash
+$ sudo apt-get install libsodium-dev
+```
+- 编译,直接执行`make`即可
+```bash
+jun@ubuntu:my_mud$ make
+cc -Wall -O2 -o test test.c -lsodium
+```
+
 ### Compatibility
 
 Linux is the platform of choice but it was successfully ported to OpenBSD and OSX.

@@ -61,6 +61,9 @@
 #define MUD_ONE_SEC  (1000 * MUD_ONE_MSEC)
 #define MUD_ONE_MIN  (60 * MUD_ONE_SEC)
 
+
+// 限制时间戳为48位，避免溢出; 
+// 网络传输时节省带宽，因为只需要传输6byte而不是8byte
 #define MUD_TIME_SIZE    (6U)
 #define MUD_TIME_BITS    (MUD_TIME_SIZE * 8U)
 #define MUD_TIME_MASK(X) ((X) & ((UINT64_C(1) << MUD_TIME_BITS) - 2))
@@ -254,6 +257,7 @@ mud_load(const unsigned char *src, size_t size)
     return ret;
 }
 
+// 获取当前时间戳, 精确到us
 static inline uint64_t
 mud_time(void)
 {
@@ -272,6 +276,7 @@ mud_time(void)
 #endif
 }
 
+// 获取当前时间戳,精确到us
 static inline uint64_t
 mud_now(struct mud *mud)
 {
@@ -468,6 +473,7 @@ mud_get_paths(struct mud *mud, struct mud_paths *paths,
     return 0;
 }
 
+// 获取所有路径
 static struct mud_path *
 mud_get_path(struct mud *mud,
              union mud_sockaddr *local,
@@ -647,6 +653,7 @@ mud_keyx_init(struct mud *mud, uint64_t now)
     return 0;
 }
 
+// 创建mud实例
 struct mud *
 mud_create(union mud_sockaddr *addr, unsigned char *key, int *aes)
 {
@@ -656,6 +663,7 @@ mud_create(union mud_sockaddr *addr, unsigned char *key, int *aes)
     int v4, v6;
     socklen_t addrlen = 0;
 
+    // IPv4 / IPv6
     switch (addr->sa.sa_family) {
     case AF_INET:
         addrlen = sizeof(struct sockaddr_in);
@@ -670,17 +678,23 @@ mud_create(union mud_sockaddr *addr, unsigned char *key, int *aes)
     default:
         return NULL;
     }
+
+    // 初始化加/解密库libsodium
     if (sodium_init() == -1)
         return NULL;
 
+    // 分配mud实例内存
     struct mud *mud = sodium_malloc(sizeof(struct mud));
 
     if (!mud)
         return NULL;
 
     memset(mud, 0, sizeof(struct mud));
+
+    // 创建UDP套接字
     mud->fd = socket(addr->sa.sa_family, SOCK_DGRAM, IPPROTO_UDP);
 
+    // 必须进行bind
     if ((mud->fd == -1) ||
         (mud_setup_socket(mud->fd, v4, v6)) ||
         (bind(mud->fd, &addr->sa, addrlen)) ||
@@ -688,20 +702,26 @@ mud_create(union mud_sockaddr *addr, unsigned char *key, int *aes)
         mud_delete(mud);
         return NULL;
     }
+
+    // 保活时间
     mud->conf.keepalive     = 25 * MUD_ONE_SEC;
+    // 容忍时间
     mud->conf.timetolerance = 10 * MUD_ONE_MIN;
+    // 密钥交换超时时间
     mud->conf.kxtimeout     = 60 * MUD_ONE_MIN;
 
+    // mac os, 先忽略
 #if defined __APPLE__
     mach_timebase_info(&mud->mtid);
 #endif
 
+    // 这段逻辑有什么用???
     uint64_t now = mud_now(mud);
     uint64_t base_time = mud_time();
-
     if (base_time > now)
         mud->base_time = base_time - now;
 
+    // 加解密使用的密钥
     memcpy(mud->keyx.private.encrypt.key, key, MUD_KEY_SIZE);
     memcpy(mud->keyx.private.decrypt.key, key, MUD_KEY_SIZE);
     sodium_memzero(key, MUD_KEY_SIZE);
@@ -1312,13 +1332,17 @@ mud_update(struct mud *mud)
     return mud->window < 1500;
 }
 
+// 设置路径
 int
 mud_set_path(struct mud *mud, struct mud_path_conf *conf)
 {
+    // 状态不对
     if (conf->state < MUD_EMPTY || conf->state >= MUD_LAST) {
         errno = EINVAL;
         return -1;
     }
+
+    // 
     struct mud_path *path = mud_get_path(mud, &conf->local,
                                               &conf->remote,
                                               conf->state);

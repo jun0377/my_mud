@@ -10,21 +10,35 @@
 
 struct mud;
 
+// mud状态
 enum mud_state {
+    // 初始状态，表示连接未初始化
     MUD_EMPTY = 0,
+    // 连接已关闭
     MUD_DOWN,
+    // 被动连接，server端
     MUD_PASSIVE,
+    // 连接已建立，并正常工作
     MUD_UP,
+    // 此枚举类型结束
     MUD_LAST,
 };
 
+// 路径状态
 enum mud_path_status {
+    // 路径正在被删除
     MUD_DELETING = 0,
+    // 正在探测路径状态
     MUD_PROBING,
+    // 路径降级
     MUD_DEGRADED,
+    // 出现丢包
     MUD_LOSSY,
+    // 等待路径就绪
     MUD_WAITING,
+    // 路径就绪
     MUD_READY,
+    // 正常运行中
     MUD_RUNNING,
 };
 
@@ -40,6 +54,7 @@ struct mud_conf {
     uint64_t kxtimeout;
 };
 
+// IPv4 or IPv6
 union mud_sockaddr {
     struct sockaddr sa;
     struct sockaddr_in sin;
@@ -47,18 +62,29 @@ union mud_sockaddr {
 };
 
 struct mud_path_conf {
+    // 状态
     enum mud_state state;
+    // 本地地址
     union mud_sockaddr local;
+    // 远端地址
     union mud_sockaddr remote;
+    // 发送最大速率
     uint64_t tx_max_rate;
+    // 接受最大速率
     uint64_t rx_max_rate;
+    // 心跳时间
     uint64_t beat;
+    // 预先设置的速率
     unsigned char pref;
+    // 固定速率
     unsigned char fixed_rate;
+    // 丢包限制
     unsigned char loss_limit;
 };
 
+// mud路径相关信息
 struct mud_path {
+    // 路径配置
     struct mud_path_conf conf;
     enum mud_path_status status;
     union mud_sockaddr remote;

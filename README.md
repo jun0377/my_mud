@@ -1,4 +1,4 @@
-# MUD
+# MUD - MPUDP - MultiPath UDP
 
 MUD is a secure, multipath network protocol over UDP.
 See [glorytun](https://github.com/angt/glorytun) for details.

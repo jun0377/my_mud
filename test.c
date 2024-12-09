@@ -12,6 +12,7 @@ main(int argc, char **argv)
 
     int client = argc == 2;
 
+    // local address
     union mud_sockaddr local = {
         .sin = {
             .sin_family = AF_INET,
@@ -19,9 +20,12 @@ main(int argc, char **argv)
             .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
         },
     };
+
+    // 加密密钥key
     unsigned char key[] = "0123456789ABCDEF0123456789ABCDEF";
     int aes = 1;
 
+    // 创建mud实例，创建了UDP套接字，并进行了bind
     struct mud *mud = mud_create(&local, key, &aes);
 
     if (!mud) {
@@ -29,6 +33,7 @@ main(int argc, char **argv)
         return -1;
     }
 
+    // client端需要指定本地地址和远端地址
     if (client) {
         struct mud_path_conf path_conf = {
             .local = local,
@@ -37,9 +42,9 @@ main(int argc, char **argv)
                 .sin_port = htons(20000),
                 .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
             },
-            .state = MUD_UP,
-            .tx_max_rate = 1000 * 1000,
-            .rx_max_rate = 1000 * 1000,
+            .state = MUD_UP,     // 对于UDP来说，只要本地地址bind成功，就认为连接已建立
+            .tx_max_rate = 1000 * 1000,     // 最大发送速率
+            .rx_max_rate = 1000 * 1000,     // 最大接收速率
             // use default beat, fixed_rate, loss_limit
         };
         if (mud_set_path(mud, &path_conf)) {

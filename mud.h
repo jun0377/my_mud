@@ -52,7 +52,7 @@ struct mud_stat {
 // mud配置
 struct mud_conf {
     uint64_t keepalive;         // 保活时间
-    uint64_t timetolerance;     // 时间容忍
+    uint64_t timetolerance;     // 容忍client/server两端多大的时间差
     uint64_t kxtimeout;          // 密钥交换超时
 };
 

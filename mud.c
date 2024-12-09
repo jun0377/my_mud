@@ -159,6 +159,7 @@ struct mud {
 #endif
 };
 
+// 加密选项
 static inline int
 mud_encrypt_opt(const struct mud_crypto_key *k,
                 const struct mud_crypto_opt *c)
@@ -193,6 +194,7 @@ mud_encrypt_opt(const struct mud_crypto_key *k,
     }
 }
 
+// 解密选项
 static inline int
 mud_decrypt_opt(const struct mud_crypto_key *k,
                 const struct mud_crypto_opt *c)
@@ -308,6 +310,7 @@ mud_timeout(uint64_t now, uint64_t last, uint64_t timeout)
     return (!last) || (MUD_TIME_MASK(now - last) >= timeout);
 }
 
+// IPv6地址转换
 static inline void
 mud_unmapv4(union mud_sockaddr *addr)
 {
@@ -328,25 +331,31 @@ mud_unmapv4(union mud_sockaddr *addr)
     addr->sin = sin;
 }
 
+// 路径选择
 static struct mud_path *
 mud_select_path(struct mud *mud, uint16_t cursor)
 {
+    // 路径选择指标，这个指标是如何计算的
     uint64_t k = (cursor * mud->rate) >> 16;
 
     for (unsigned i = 0; i < mud->capacity; i++) {
         struct mud_path *path = &mud->paths[i];
 
+        // 跳过状态不是RUNNING的路径
         if (path->status != MUD_RUNNING)
             continue;
 
+        // 选择路径
         if (k < path->tx.rate)
             return path;
 
+        // 更新路径选择指标，继续检查下一个路径
         k -= path->tx.rate;
     }
     return NULL;
 }
 
+// 使用指定路径发送数据
 static int
 mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
               void *data, size_t size, int flags)
@@ -354,9 +363,11 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     if (!size || !path)
         return 0;
 
+    // 控制信息
     unsigned char ctrl[MUD_CTRL_SIZE];
     memset(ctrl, 0, sizeof(ctrl));
 
+    // 数据包的包头
     struct msghdr msg = {
         .msg_iov = &(struct iovec) {
             .iov_base = data,
@@ -365,19 +376,32 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         .msg_iovlen = 1,
         .msg_control = ctrl,
     };
+
+    // 对端地址为IPv4
     if (path->conf.remote.sa.sa_family == AF_INET) {
+
+        // 对端地址
         msg.msg_name = &path->conf.remote.sin;
+        // 对端地址长度
         msg.msg_namelen = sizeof(struct sockaddr_in);
+        // 控制信息长度
         msg.msg_controllen = CMSG_SPACE(MUD_PKTINFO_SIZE);
 
+        // 控制信息
         struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+        // IP层
         cmsg->cmsg_level = IPPROTO_IP;
+        // 
         cmsg->cmsg_type = MUD_PKTINFO;
+        // 
         cmsg->cmsg_len = CMSG_LEN(MUD_PKTINFO_SIZE);
+        // 本地地址
         memcpy(MUD_PKTINFO_DST(CMSG_DATA(cmsg)),
                &path->conf.local.sin.sin_addr,
                sizeof(struct in_addr));
-    } else if (path->conf.remote.sa.sa_family == AF_INET6) {
+    } 
+    // 对端地址为IPv6
+    else if (path->conf.remote.sa.sa_family == AF_INET6) {
         msg.msg_name = &path->conf.remote.sin6;
         msg.msg_namelen = sizeof(struct sockaddr_in6);
         msg.msg_controllen = CMSG_SPACE(sizeof(struct in6_pktinfo));
@@ -393,12 +417,16 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         errno = EAFNOSUPPORT;
         return -1;
     }
+
+    // 通过UDP发送msg
     ssize_t ret = sendmsg(mud->fd, &msg, flags);
 
+    // 发送统计
     path->tx.total++;
     path->tx.bytes += size;
     path->tx.time = now;
 
+    // 更新流控窗口
     if (mud->window > size) {
         mud->window -= size;
     } else {
@@ -407,12 +435,14 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     return (int)ret;
 }
 
+// 设置socket选项
 static int
 mud_sso_int(int fd, int level, int optname, int opt)
 {
     return setsockopt(fd, level, optname, &opt, sizeof(opt));
 }
 
+// 两个地址是否相同
 static inline int
 mud_cmp_addr(union mud_sockaddr *a, union mud_sockaddr *b)
 {
@@ -429,6 +459,7 @@ mud_cmp_addr(union mud_sockaddr *a, union mud_sockaddr *b)
     return 1;
 }
 
+// 两个端口是否相同
 static inline int
 mud_cmp_port(union mud_sockaddr *a, union mud_sockaddr *b)
 {
@@ -445,6 +476,7 @@ mud_cmp_port(union mud_sockaddr *a, union mud_sockaddr *b)
     return 1;
 }
 
+// 根据本地地址或远端地址来获取路径
 int
 mud_get_paths(struct mud *mud, struct mud_paths *paths,
               union mud_sockaddr *local, union mud_sockaddr *remote)
@@ -561,6 +593,7 @@ mud_get_path(struct mud *mud,
     return path;
 }
 
+// 错误信息
 int
 mud_get_errors(struct mud *mud, struct mud_errors *err)
 {
@@ -572,6 +605,7 @@ mud_get_errors(struct mud *mud, struct mud_errors *err)
     return 0;
 }
 
+// mud配置
 int
 mud_set(struct mud *mud, struct mud_conf *conf)
 {
@@ -585,6 +619,7 @@ mud_set(struct mud *mud, struct mud_conf *conf)
     return 0;
 }
 
+// 获取MTU
 size_t
 mud_get_mtu(struct mud *mud)
 {
@@ -594,6 +629,7 @@ mud_get_mtu(struct mud *mud)
     return mud->mtu - MUD_PKT_MIN_SIZE;
 }
 
+// 设置socket选项
 static int
 mud_setup_socket(int fd, int v4, int v6)
 {
@@ -610,6 +646,7 @@ mud_setup_socket(int fd, int v4, int v6)
     return 0;
 }
 
+// 哈希密钥
 static void
 mud_hash_key(unsigned char *dst, unsigned char *key, unsigned char *secret,
              unsigned char *pk0, unsigned char *pk1)
@@ -769,6 +806,7 @@ mud_get_fd(struct mud *mud)
     return mud->fd;
 }
 
+// 删除mud实例
 void
 mud_delete(struct mud *mud)
 {
@@ -784,6 +822,7 @@ mud_delete(struct mud *mud)
     sodium_free(mud);
 }
 
+// 加密
 static size_t
 mud_encrypt(struct mud *mud, uint64_t now,
             unsigned char *dst, size_t dst_size,
@@ -809,6 +848,7 @@ mud_encrypt(struct mud *mud, uint64_t now,
     return size;
 }
 
+// 解密
 static size_t
 mud_decrypt(struct mud *mud,
             unsigned char *dst, size_t dst_size,
@@ -838,6 +878,7 @@ mud_decrypt(struct mud *mud,
     return size;
 }
 
+// 从msg包头中获取本地地址
 static int
 mud_localaddr(union mud_sockaddr *addr, struct msghdr *msg)
 {
@@ -865,6 +906,7 @@ mud_localaddr(union mud_sockaddr *addr, struct msghdr *msg)
     return 1;
 }
 
+// 是否是IPv6地址
 static int
 mud_addr_is_v6(struct mud_addr *addr)
 {
@@ -875,6 +917,7 @@ mud_addr_is_v6(struct mud_addr *addr)
     return memcmp(addr->v6, v4mapped, sizeof(v4mapped));
 }
 
+// 从套接字获取地址
 static int
 mud_addr_from_sock(struct mud_addr *addr, union mud_sockaddr *sock)
 {
@@ -893,6 +936,7 @@ mud_addr_from_sock(struct mud_addr *addr, union mud_sockaddr *sock)
     return 0;
 }
 
+// 从地址获取地址
 static void
 mud_sock_from_addr(union mud_sockaddr *sock, struct mud_addr *addr)
 {
@@ -907,6 +951,7 @@ mud_sock_from_addr(union mud_sockaddr *sock, struct mud_addr *addr)
     }
 }
 
+// 发送msg包
 static int
 mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
              uint64_t sent_time, uint64_t fw_bytes, uint64_t fw_total,
@@ -956,6 +1001,7 @@ mud_send_msg(struct mud *mud, struct mud_path *path, uint64_t now,
                          sent_time ? MSG_CONFIRM : 0);
 }
 
+// 解密msg包
 static size_t
 mud_decrypt_msg(struct mud *mud,
                 unsigned char *dst, size_t dst_size,
@@ -977,6 +1023,7 @@ mud_decrypt_msg(struct mud *mud,
     return size;
 }
 
+// 更新路径选择指标
 static void
 mud_update_rl(struct mud *mud, struct mud_path *path, uint64_t now,
               uint64_t tx_dt, uint64_t tx_bytes, uint64_t tx_pkt,
@@ -1044,6 +1091,7 @@ mud_update_mtu(struct mud_path *path, size_t size)
     }
 }
 
+// 更新mud状态
 static void
 mud_update_stat(struct mud_stat *stat, const uint64_t val)
 {
@@ -1058,6 +1106,7 @@ mud_update_stat(struct mud_stat *stat, const uint64_t val)
     }
 }
 
+// 接收msg包
 static void
 mud_recv_msg(struct mud *mud, struct mud_path *path,
              uint64_t now, uint64_t sent_time,
@@ -1066,8 +1115,10 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
     struct mud_msg *msg = (struct mud_msg *)data;
     const uint64_t tx_time = MUD_LOAD_MSG(msg->sent_time);
 
+    // 从msg包中获取对端地址
     mud_sock_from_addr(&path->remote, &msg->addr);
 
+    
     if (tx_time) {
         mud_update_stat(&path->rtt, MUD_TIME_MASK(now - tx_time));
 
@@ -1141,12 +1192,17 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
                  size);
 }
 
+// 接收数据
 int
 mud_recv(struct mud *mud, void *data, size_t size)
 {
+    // 对端地址
     union mud_sockaddr remote;
+    // 控制信息
     unsigned char ctrl[MUD_CTRL_SIZE];
+    // 数据包
     unsigned char packet[MUD_PKT_MAX_SIZE];
+    // msg包头
     struct msghdr msg = {
         .msg_name = &remote,
         .msg_namelen = sizeof(remote),
@@ -1158,11 +1214,15 @@ mud_recv(struct mud *mud, void *data, size_t size)
         .msg_control = ctrl,
         .msg_controllen = sizeof(ctrl),
     };
+
+    // 从UDP套接字接收数据
     const ssize_t packet_size = recvmsg(mud->fd, &msg, 0);
 
+    // 接收失败
     if (packet_size == (ssize_t)-1)
         return -1;
 
+    // 数据包长度小于最小值，或者数据包被截断，则丢弃
     if ((msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) ||
         (packet_size <= (ssize_t)MUD_PKT_MIN_SIZE))
         return 0;
@@ -1170,8 +1230,10 @@ mud_recv(struct mud *mud, void *data, size_t size)
     const uint64_t now = mud_now(mud);
     const uint64_t sent_time = mud_load(packet, MUD_TIME_SIZE);
 
+    // IPv6地址
     mud_unmapv4(&remote);
 
+    // 两端的时间差超过容忍值，则认为时钟不同步，丢弃数据包
     if ((MUD_TIME_MASK(now - sent_time) > mud->conf.timetolerance) &&
         (MUD_TIME_MASK(sent_time - now) > mud->conf.timetolerance)) {
         mud->err.clocksync.addr = remote;
@@ -1179,36 +1241,47 @@ mud_recv(struct mud *mud, void *data, size_t size)
         mud->err.clocksync.count++;
         return 0;
     }
+
+    // 解密数据包
     const size_t ret = MUD_MSG(sent_time)
                      ? mud_decrypt_msg(mud, data, size, packet, (size_t)packet_size)
                      : mud_decrypt(mud, data, size, packet, (size_t)packet_size);
+    
+    // 解密失败
     if (!ret) {
         mud->err.decrypt.addr = remote;
         mud->err.decrypt.time = now;
         mud->err.decrypt.count++;
         return 0;
     }
-    union mud_sockaddr local;
 
+    // 本地地址
+    union mud_sockaddr local;
     if (mud_localaddr(&local, &msg))
         return 0;
 
+    // 获取指定路径
     struct mud_path *path = mud_get_path(mud, &local, &remote, MUD_PASSIVE);
 
+    // 路径不存在，或者路径状态不对，则丢弃数据包
     if (!path || path->conf.state <= MUD_DOWN)
         return 0;
 
+    // 如果是msg包，则调用mud_recv_msg处理
     if (MUD_MSG(sent_time)) {
         mud_recv_msg(mud, path, now, sent_time, data, (size_t)packet_size);
     } else {
         path->idle = now;
     }
+
+    // 接收统计
     path->rx.total++;
     path->rx.time = now;
     path->rx.bytes += (size_t)packet_size;
 
     mud->last_recv_time = now;
 
+    // 是否是一个msg包
     return MUD_MSG(sent_time) ? 0 : (int)ret;
 }
 
@@ -1466,35 +1539,51 @@ mud_send_wait(struct mud *mud)
     return mud->window < 1500;
 }
 
+// 发送数据
 int
 mud_send(struct mud *mud, const void *data, size_t size)
 {
     if (!size)
         return 0;
 
+    // 流控窗口小于标准MTU1500,返回EAGAIN错误码
+    // 避免频繁发送小包，提高网络传输效率
+
     if (mud->window < 1500) {
         errno = EAGAIN;
         return -1;
     }
+
+    // 1500 byte大小的包
     unsigned char packet[MUD_PKT_MAX_SIZE];
+
     const uint64_t now = mud_now(mud);
+
+    // 加密
     const size_t packet_size = mud_encrypt(mud, now,
                                            packet, sizeof(packet),
                                            data, size);
     if (!packet_size) {
-        errno = EMSGSIZE;
+        errno = EMSGSIZE;   // 错误码Message too long
         return -1;
     }
+
+    // 用于路径选择的指标
     uint16_t k;
     memcpy(&k, &packet[packet_size - sizeof(k)], sizeof(k));
 
+    // 路径选择
     struct mud_path *path = mud_select_path(mud, k);
 
+    // 没有可用路径
     if (!path) {
         errno = EAGAIN;
         return -1;
     }
+
+    // 路径空闲时间戳
     path->idle = now;
 
+    // 发送数据
     return mud_send_path(mud, path, now, packet, packet_size, 0);
 }

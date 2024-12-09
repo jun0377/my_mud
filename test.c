@@ -63,6 +63,7 @@ main(int argc, char **argv)
         if (mud_update(mud))
             usleep(100000); // don't use all the cpu
 
+        // 客户端 - 接收并发送数据
         if (client) {
             // when there is data, mud_recv() is mandatory
 
@@ -78,6 +79,7 @@ main(int argc, char **argv)
                 perror("poll");
                 return -1;
             case 1:
+                // 读取数据
                 if (mud_recv(mud, buf, sizeof(buf)) == -1) {
                     perror("mud_recv");
                     return -1;
@@ -86,6 +88,8 @@ main(int argc, char **argv)
 
             // we can safely call mud_send()
             // even if the link is not ready
+
+            // 发送数据
             int r = mud_send(mud, argv[1], strlen(argv[1]));
 
             if (r == -1) {
@@ -96,6 +100,8 @@ main(int argc, char **argv)
                 return -1;
             }
             if (r) break;  // we sent everything, bye :)
+
+        // 服务器端 - 接收数据
         } else {
             int r = mud_recv(mud, buf, sizeof(buf));
 

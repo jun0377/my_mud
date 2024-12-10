@@ -39,8 +39,11 @@
 
 #if defined IP_PKTINFO
 #define MUD_PKTINFO IP_PKTINFO
+// 源地址指针
 #define MUD_PKTINFO_SRC(X) &((struct in_pktinfo *)(X))->ipi_addr
+// 目标地址指针
 #define MUD_PKTINFO_DST(X) &((struct in_pktinfo *)(X))->ipi_spec_dst
+
 #define MUD_PKTINFO_SIZE sizeof(struct in_pktinfo)
 #elif defined IP_RECVDSTADDR
 #define MUD_PKTINFO IP_RECVDSTADDR
@@ -64,18 +67,21 @@
 
 // 限制时间戳为48位，避免溢出; 
 // 网络传输时节省带宽，因为只需要传输6byte而不是8byte
-#define MUD_TIME_SIZE    (6U)
-#define MUD_TIME_BITS    (MUD_TIME_SIZE * 8U)
+#define MUD_TIME_SIZE    (6U)                           // 6 byte
+#define MUD_TIME_BITS    (MUD_TIME_SIZE * 8U)           // 48 bit
 #define MUD_TIME_MASK(X) ((X) & ((UINT64_C(1) << MUD_TIME_BITS) - 2))
 
 #define MUD_KEY_SIZE (32U)
 #define MUD_MAC_SIZE (16U)
 
+// 获取消息标识
 #define MUD_MSG(X)       ((X) & UINT64_C(1))
+// 给消息打上标识
 #define MUD_MSG_MARK(X)  ((X) | UINT64_C(1))
+// 消息发送的最大次数
 #define MUD_MSG_SENT_MAX (5)
 
-#define MUD_PKT_MIN_SIZE (MUD_TIME_SIZE + MUD_MAC_SIZE)
+#define MUD_PKT_MIN_SIZE (MUD_TIME_SIZE + MUD_MAC_SIZE)  // 6 + 16 = 22byte
 #define MUD_PKT_MAX_SIZE (1500U)
 
 #define MUD_MTU_MIN ( 576U + MUD_PKT_MIN_SIZE)
@@ -100,6 +106,7 @@ struct mud_crypto_key {
     int aes;
 };
 
+// 兼容IPv4/IPv6的地址结构体
 struct mud_addr {
     union {
         unsigned char v6[16];
@@ -112,22 +119,23 @@ struct mud_addr {
     unsigned char port[2];
 };
 
+// 自定义msg格式
 struct mud_msg {
-    unsigned char sent_time[MUD_TIME_SIZE];
-    unsigned char aes;
-    unsigned char pkey[MUD_PUBKEY_SIZE];
+    unsigned char sent_time[MUD_TIME_SIZE];     // 发送时间戳
+    unsigned char aes;                          // aes加密
+    unsigned char pkey[MUD_PUBKEY_SIZE];        // 密钥
     struct {
-        unsigned char bytes[sizeof(uint64_t)];
-        unsigned char total[sizeof(uint64_t)];
-    } tx, rx, fw;
-    unsigned char max_rate[sizeof(uint64_t)];
-    unsigned char beat[MUD_TIME_SIZE];
-    unsigned char mtu[2];
-    unsigned char pref;
-    unsigned char loss;
-    unsigned char fixed_rate;
-    unsigned char loss_limit;
-    struct mud_addr addr;
+        unsigned char bytes[sizeof(uint64_t)];  // 本地发送/接收字节数
+        unsigned char total[sizeof(uint64_t)];  // 总发送/接收包数
+    } tx, rx, fw;                               // 发送/接收/
+    unsigned char max_rate[sizeof(uint64_t)];   // 最大码率
+    unsigned char beat[MUD_TIME_SIZE];          // 心跳
+    unsigned char mtu[2];                       // mtu
+    unsigned char pref;                         // 优先级
+    unsigned char loss;                         // 丢包率
+    unsigned char fixed_rate;                   // 固定码率
+    unsigned char loss_limit;                   // 修包限制
+    struct mud_addr addr;                       // 地址
 };
 
 struct mud_keyx {
@@ -148,9 +156,9 @@ struct mud {
     unsigned capacity;      // 路径数量
     struct mud_keyx keyx;
     uint64_t last_recv_time;    // 最后一次收到数据的时间戳
-    size_t mtu;
-    struct mud_errors err;
-    uint64_t rate;
+    size_t mtu;                 // mtu
+    struct mud_errors err;      // 错误统计
+    uint64_t rate;              // 码率
     uint64_t window;            // 流控窗口大小
     uint64_t window_time;       // 流控窗口更新的时间戳
     uint64_t base_time;
@@ -227,6 +235,7 @@ mud_decrypt_opt(const struct mud_crypto_key *k,
     }
 }
 
+// 将一个uint64_t类型的数据存储到一个unsigned char数组中
 static inline void
 mud_store(unsigned char *dst, uint64_t src, size_t size)
 {
@@ -242,6 +251,7 @@ mud_store(unsigned char *dst, uint64_t src, size_t size)
     dst[7] = (unsigned char)(src >> 56);
 }
 
+// 从一个unsigned char数组中加载一个uint64_t类型的数据
 static inline uint64_t
 mud_load(const unsigned char *src, size_t size)
 {
@@ -297,13 +307,14 @@ mud_now(struct mud *mud)
 #endif
 }
 
+// 计算两个值之差的绝对值
 static inline uint64_t
 mud_abs_diff(uint64_t a, uint64_t b)
 {
     return (a >= b) ? a - b : b - a;
 }
 
-// 判断是否超时，单位us
+// 判断是否超时，单位us; now - last > timeout
 static inline int
 mud_timeout(uint64_t now, uint64_t last, uint64_t timeout)
 {
@@ -1023,32 +1034,61 @@ mud_decrypt_msg(struct mud *mud,
     return size;
 }
 
-// 更新路径选择指标
+/* 
+    更新路径参数: 发送速率和丢包率
+    tx_dt: 对端两次发送的时间戳差值
+    tx_bytes: 对端两次发送间隔的字节数
+    tx_pkt: 对端两次发送间隔的包数
+    rx_dt：对端两次接收的时间戳差值
+    rx_bytes：对端两次接收间隔的字节数
+    rx_pkt：对端两次接收间隔的包数
+*/
 static void
 mud_update_rl(struct mud *mud, struct mud_path *path, uint64_t now,
               uint64_t tx_dt, uint64_t tx_bytes, uint64_t tx_pkt,
               uint64_t rx_dt, uint64_t rx_bytes, uint64_t rx_pkt)
 {
+
+    // 根据接收时间和发送时间的差值来调整传输速率: 两次接收的时间间隔 > (两次发送的时间间隔 * 1.125)
     if (rx_dt && rx_dt > tx_dt + (tx_dt >> 3)) {
-        if (!path->conf.fixed_rate)
+
+        // 用户没有配置固定传输速率，计算发送速率
+        if (!path->conf.fixed_rate){
             path->tx.rate = (7 * rx_bytes * MUD_ONE_SEC) / (8 * rx_dt);
+        }
+
     } else {
+
+        // 累计发送的包数
         uint64_t tx_acc = path->msg.tx.acc + tx_pkt;
+        // 累计接收的包数
         uint64_t rx_acc = path->msg.rx.acc + rx_pkt;
 
+        // 累计发送超过1000个包， 统计丢包率
         if (tx_acc > 1000) {
-            if (tx_acc >= rx_acc)
+            
+            // 如果发送的包数大于等于接收的包数，则计算丢包率; 这个判断条件的原因
+            if (tx_acc >= rx_acc){
                 path->tx.loss = (tx_acc - rx_acc) * 255U / tx_acc;
+            }
+
+            // 更新累计发送/接收的包数，更新为当前值的 15/16 = 0.9375;避免过多历史数据
             path->msg.tx.acc = tx_acc - (tx_acc >> 4);
             path->msg.rx.acc = rx_acc - (rx_acc >> 4);
-        } else {
+
+        } 
+        // 更新累计发送/接收的包数
+        else {
             path->msg.tx.acc = tx_acc;
             path->msg.rx.acc = rx_acc;
         }
 
+        // 用户没有配置固定传输速率，则将当前的发送速率增加10%
         if (!path->conf.fixed_rate)
             path->tx.rate += path->tx.rate / 10;
     }
+
+    // 发送速率不能超过配置的最大传输速率
     if (path->tx.rate > path->conf.tx_max_rate)
         path->tx.rate = path->conf.tx_max_rate;
 }
@@ -1091,15 +1131,22 @@ mud_update_mtu(struct mud_path *path, size_t size)
     }
 }
 
-// 更新mud状态
+// 更新mud的rtt
 static void
 mud_update_stat(struct mud_stat *stat, const uint64_t val)
 {
+    // 开始计算rtt
     if (stat->setup) {
+        
+        // 计算新值与旧值之差
         const uint64_t var = mud_abs_diff(stat->val, val);
+        // 平滑滤波: 旧值 * 0.75 + var * 0.25
         stat->var = ((stat->var << 1) + stat->var + var) >> 2;
+        // 加权平均值
         stat->val = ((stat->val << 3) - stat->val + val) >> 3;
+
     } else {
+
         stat->setup = 1;
         stat->var = val >> 1;
         stat->val = val;
@@ -1112,25 +1159,42 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
              uint64_t now, uint64_t sent_time,
              unsigned char *data, size_t size)
 {
+    // 解析成msg
     struct mud_msg *msg = (struct mud_msg *)data;
+    // 对端发送时间戳
     const uint64_t tx_time = MUD_LOAD_MSG(msg->sent_time);
 
     // 从msg包中获取对端地址
     mud_sock_from_addr(&path->remote, &msg->addr);
 
-    
+    // 对端发送时间戳有效
     if (tx_time) {
+
+        // 更新rtt
         mud_update_stat(&path->rtt, MUD_TIME_MASK(now - tx_time));
 
+        // 从msg中获取对端发送的字节数
         const uint64_t tx_bytes = MUD_LOAD_MSG(msg->fw.bytes);
+        // 从msg中获取对端发送的包数
         const uint64_t tx_total = MUD_LOAD_MSG(msg->fw.total);
+        // 从msg中获取对端接收的字节数
         const uint64_t rx_bytes = MUD_LOAD_MSG(msg->rx.bytes);
+        // 从msg中获取对端接收的包数
         const uint64_t rx_total = MUD_LOAD_MSG(msg->rx.total);
+        // 更新rx_time为数据包发送时间戳
         const uint64_t rx_time  = sent_time;
 
+        /*
+            对端发送时间戳 > 上次发送时间戳 && 本次对端发送的字节数 > 上次对端发送的字节数 &&
+
+        */
         if ((tx_time > path->msg.tx.time) && (tx_bytes > path->msg.tx.bytes) &&
             (rx_time > path->msg.rx.time) && (rx_bytes > path->msg.rx.bytes)) {
+            
+            // 路径状态探测
             if (path->msg.set && path->status > MUD_PROBING) {
+
+                // 更新发送速率和丢包率
                 mud_update_rl(mud, path, now,
                         MUD_TIME_MASK(tx_time - path->msg.tx.time),
                         tx_bytes - path->msg.tx.bytes,
@@ -1139,6 +1203,8 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
                         rx_bytes - path->msg.rx.bytes,
                         rx_total - path->msg.rx.total);
             }
+
+            
             path->msg.tx.time = tx_time;
             path->msg.rx.time = rx_time;
             path->msg.tx.bytes = tx_bytes;
@@ -1204,15 +1270,15 @@ mud_recv(struct mud *mud, void *data, size_t size)
     unsigned char packet[MUD_PKT_MAX_SIZE];
     // msg包头
     struct msghdr msg = {
-        .msg_name = &remote,
-        .msg_namelen = sizeof(remote),
-        .msg_iov = &(struct iovec) {
-            .iov_base = packet,
-            .iov_len = sizeof(packet),
+        .msg_name = &remote,                // 目标地址
+        .msg_namelen = sizeof(remote),      // 目标地址长度
+        .msg_iov = &(struct iovec) {        // 数据缓冲区
+            .iov_base = packet,             // 数据缓冲区基地址
+            .iov_len = sizeof(packet),      // 数据缓冲区长度
         },
-        .msg_iovlen = 1,
-        .msg_control = ctrl,
-        .msg_controllen = sizeof(ctrl),
+        .msg_iovlen = 1,                    // I/O矢量数组中的元素数量，这里只有一个数据域，因此为1
+        .msg_control = ctrl,                // 控制信息
+        .msg_controllen = sizeof(ctrl),     // 控制信息长度
     };
 
     // 从UDP套接字接收数据
@@ -1222,32 +1288,37 @@ mud_recv(struct mud *mud, void *data, size_t size)
     if (packet_size == (ssize_t)-1)
         return -1;
 
-    // 数据包长度小于最小值，或者数据包被截断，则丢弃
+    // 数据包长度超过接收缓冲区长度sizeof(packet) 或 数据包长度小于最小值，立即退出
     if ((msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) ||
         (packet_size <= (ssize_t)MUD_PKT_MIN_SIZE))
         return 0;
 
+    // 当前时间戳
     const uint64_t now = mud_now(mud);
+    // 从数据包中获取发送时间戳
     const uint64_t sent_time = mud_load(packet, MUD_TIME_SIZE);
 
-    // IPv6地址
+    // 如果是IPv6地址，进行地址转换
     mud_unmapv4(&remote);
 
-    // 两端的时间差超过容忍值，则认为时钟不同步，丢弃数据包
+    // 数据包的接收时间和发送时间差超过了容忍时间
     if ((MUD_TIME_MASK(now - sent_time) > mud->conf.timetolerance) &&
         (MUD_TIME_MASK(sent_time - now) > mud->conf.timetolerance)) {
-        mud->err.clocksync.addr = remote;
-        mud->err.clocksync.time = now;
-        mud->err.clocksync.count++;
+
+        // 此时认为发生了时钟同步错误
+        
+        mud->err.clocksync.addr = remote;   // 错误时的地址信息
+        mud->err.clocksync.time = now;      // 当前时间戳
+        mud->err.clocksync.count++;         // 错误次数
         return 0;
     }
 
-    // 解密数据包
+    // 解密数据包，首先判断是一个msg包还是普通数据包
     const size_t ret = MUD_MSG(sent_time)
                      ? mud_decrypt_msg(mud, data, size, packet, (size_t)packet_size)
                      : mud_decrypt(mud, data, size, packet, (size_t)packet_size);
     
-    // 解密失败
+    // 解密失败，记录错误
     if (!ret) {
         mud->err.decrypt.addr = remote;
         mud->err.decrypt.time = now;

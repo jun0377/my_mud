@@ -44,15 +44,15 @@ enum mud_path_status {
 };
 
 struct mud_stat {
-    uint64_t val;
-    uint64_t var;
-    int setup;
+    uint64_t val;   // rtt加权平均值
+    uint64_t var;   // 经过平滑滤波算法处理后的rtt平均值
+    int setup;      // 
 };
 
 // mud配置
 struct mud_conf {
     uint64_t keepalive;         // 保活时间
-    uint64_t timetolerance;     // 容忍client/server两端多大的时间差
+    uint64_t timetolerance;     // 容忍时间长度
     uint64_t kxtimeout;          // 密钥交换超时
 };
 
@@ -88,8 +88,11 @@ struct mud_path_conf {
 struct mud_path {
     // 路径配置
     struct mud_path_conf conf;
+    // 路径状态
     enum mud_path_status status;
+    // 对端地址
     union mud_sockaddr remote;
+    // 实时状态信息
     struct mud_stat rtt;
 
     // 发送和接收统计
@@ -97,7 +100,7 @@ struct mud_path {
         uint64_t total;
         uint64_t bytes;
         uint64_t time;      // 
-        uint64_t rate;
+        uint64_t rate;      // 发送/接收速率,控制发送速率
         uint64_t loss;
     } tx, rx;
 
@@ -112,7 +115,7 @@ struct mud_path {
         } tx, rx;
         uint64_t time;              // 当前消息时间戳
         uint64_t sent;              // 已发送消息数
-        uint64_t set;               // 每多少个消息进行一次统计
+        uint64_t set;               // 路径状态探测开关
     } msg;
 
     // MTU相关内容
@@ -126,16 +129,18 @@ struct mud_path {
     uint64_t idle;  // 路径空闲时间统计
 };
 
+// 错误
 struct mud_error {
-    union mud_sockaddr addr;
-    uint64_t time;
-    uint64_t count;
+    union mud_sockaddr addr;    // 地址信息
+    uint64_t time;              // 时间戳
+    uint64_t count;             // 错误计数
 };
 
+// 错误信息
 struct mud_errors {
-    struct mud_error decrypt;
-    struct mud_error clocksync;
-    struct mud_error keyx;
+    struct mud_error decrypt;           // 加密/解密错误
+    struct mud_error clocksync;         // 时钟同步错误
+    struct mud_error keyx;              // 密钥错误
 };
 
 struct mud_paths {

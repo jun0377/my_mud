@@ -342,11 +342,11 @@ mud_unmapv4(union mud_sockaddr *addr)
     addr->sin = sin;
 }
 
-// 路径选择
+// 路径选择，加权选择算法，发送速率更高的路径更有可能被选中
 static struct mud_path *
 mud_select_path(struct mud *mud, uint16_t cursor)
 {
-    // 路径选择指标，这个指标是如何计算的
+    // k = (cursor * 当前速率) / 65536
     uint64_t k = (cursor * mud->rate) >> 16;
 
     for (unsigned i = 0; i < mud->capacity; i++) {
@@ -356,7 +356,9 @@ mud_select_path(struct mud *mud, uint16_t cursor)
         if (path->status != MUD_RUNNING)
             continue;
 
-        // 选择路径
+        // 选择路径，选择使用第一个发送速率达标的路径
+        // 这样难道不会导致一直使用同一个路径发送吗?
+        // 可能造成路径使用不均衡，但是保证了选择具有足够带宽的路径
         if (k < path->tx.rate)
             return path;
 
@@ -371,6 +373,7 @@ static int
 mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
               void *data, size_t size, int flags)
 {
+    // 参数校验
     if (!size || !path)
         return 0;
 
@@ -381,11 +384,11 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     // 数据包的包头
     struct msghdr msg = {
         .msg_iov = &(struct iovec) {
-            .iov_base = data,
-            .iov_len = size,
+            .iov_base = data,           // 负载基地址
+            .iov_len = size,            // 负载大小
         },
         .msg_iovlen = 1,
-        .msg_control = ctrl,
+        .msg_control = ctrl,            // 控制信息
     };
 
     // 对端地址为IPv4
@@ -402,11 +405,11 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
         struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
         // IP层
         cmsg->cmsg_level = IPPROTO_IP;
-        // 
+        // 设置IP包附加信息
         cmsg->cmsg_type = MUD_PKTINFO;
-        // 
+        // 控制信息的长度
         cmsg->cmsg_len = CMSG_LEN(MUD_PKTINFO_SIZE);
-        // 本地地址
+        // 数据包的本地地址，用于控制数据包从哪个本地地址发出
         memcpy(MUD_PKTINFO_DST(CMSG_DATA(cmsg)),
                &path->conf.local.sin.sin_addr,
                sizeof(struct in_addr));
@@ -437,7 +440,7 @@ mud_send_path(struct mud *mud, struct mud_path *path, uint64_t now,
     path->tx.bytes += size;
     path->tx.time = now;
 
-    // 更新流控窗口
+    // 更新流控窗口,缩减已被占用的大小
     if (mud->window > size) {
         mud->window -= size;
     } else {
@@ -849,6 +852,8 @@ mud_encrypt(struct mud *mud, uint64_t now,
         .src = src,
         .size = src_size,
     };
+
+    // 时间戳
     mud_store(dst, now, MUD_TIME_SIZE);
 
     if (mud->keyx.use_next) {
@@ -1185,8 +1190,8 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
         const uint64_t rx_time  = sent_time;
 
         /*
-            对端发送时间戳 > 上次发送时间戳 && 本次对端发送的字节数 > 上次对端发送的字节数 &&
-
+            对端发送时间戳 > 上次发送时间戳 && 对端发送的字节数 > 上次对端发送的字节数 &&
+            对端接收时间 > 上次接收时间 && 对端接收的字节数 > 对端上次接收侧字节数 
         */
         if ((tx_time > path->msg.tx.time) && (tx_bytes > path->msg.tx.bytes) &&
             (rx_time > path->msg.rx.time) && (rx_bytes > path->msg.rx.bytes)) {
@@ -1204,7 +1209,7 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
                         rx_total - path->msg.rx.total);
             }
 
-            
+            // 更新path中msg状态
             path->msg.tx.time = tx_time;
             path->msg.rx.time = rx_time;
             path->msg.tx.bytes = tx_bytes;
@@ -1213,35 +1218,55 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
             path->msg.rx.total = rx_total;
             path->msg.set = 1;
         }
+
+        // 更新丢包率
         path->rx.loss = (uint64_t)msg->loss;
+        // 充值发送计数器
         path->msg.sent = 0;
 
+        // 如果当前路径是作为server被动连接的，则直接return
         if (path->conf.state == MUD_PASSIVE)
             return;
 
+        // 更新MTU
         mud_update_mtu(path, size);
 
+        // 如果对端发送的MTU与当前MTU一致，则认为MTU探测成功
         if (path->mtu.last && path->mtu.last == MUD_LOAD_MSG(msg->mtu))
             path->mtu.ok = path->mtu.last;
+
     } else {
+
+        // 更新心跳值
         path->conf.beat = MUD_LOAD_MSG(msg->beat);
 
+        // 获取对端的最大发送速率
         const uint64_t max_rate = MUD_LOAD_MSG(msg->max_rate);
 
-        if (path->conf.tx_max_rate != max_rate || msg->fixed_rate)
+        // 如果最大发送速率有变化或使用固定速率,则更新传输速率
+        if (path->conf.tx_max_rate != max_rate || msg->fixed_rate) {
             path->tx.rate = max_rate;
+        }
 
+        // 更新路径配置-最大发送速率
         path->conf.tx_max_rate = max_rate;
+        // 更新路径优先级
         path->conf.pref = msg->pref;
+        // 固定速率
         path->conf.fixed_rate = msg->fixed_rate;
+        // 丢包限制
         path->conf.loss_limit = msg->loss_limit;
 
+        // 更新MTU
         path->mtu.last = MUD_LOAD_MSG(msg->mtu);
         path->mtu.ok = path->mtu.last;
 
+        // 发送计数器
         path->msg.sent++;
         path->msg.time = now;
     }
+
+    // 密钥
     if (memcmp(msg->pkey, mud->keyx.remote, MUD_PUBKEY_SIZE)) {
         if (mud_keyx(&mud->keyx, msg->pkey, msg->aes)) {
             mud->err.keyx.addr = path->conf.remote;
@@ -1252,6 +1277,8 @@ mud_recv_msg(struct mud *mud, struct mud_path *path,
     } else if (path->conf.state == MUD_UP) {
         mud->keyx.use_next = 1;
     }
+
+    // 向对端回复确认报文
     mud_send_msg(mud, path, now, sent_time,
                  MUD_LOAD_MSG(msg->tx.bytes),
                  MUD_LOAD_MSG(msg->tx.total),
@@ -1639,7 +1666,7 @@ mud_send(struct mud *mud, const void *data, size_t size)
         return -1;
     }
 
-    // 用于路径选择的指标
+    // 用于路径选择的指标，加密后数据包的最后两字节
     uint16_t k;
     memcpy(&k, &packet[packet_size - sizeof(k)], sizeof(k));
 
